@@ -1,0 +1,355 @@
+\documentclass[runningheads]{llncs}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish,es-tabla,es-noshorthands]{babel}
+\addto\captionsspanish{\renewcommand{\abstractname}{Resumen.}}
+\usepackage{graphicx,booktabs,courier,url}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,calc}
+\usepackage{listings}
+\def\keywordname{\textbf{Palabras clave:}}
+\lstset{basicstyle=\ttfamily\scriptsize,frame=single,breaklines=true,columns=fullflexible,
+ xleftmargin=0pt,extendedchars=true,inputencoding=utf8,aboveskip=6pt,belowskip=4pt,
+ literate={á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1 {ñ}{{\~n}}1
+ {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1 {Ó}{{\'O}}1 {Ú}{{\'U}}1 {ü}{{\"u}}1}
+\usepackage[hidelinks]{hyperref}
+\urlstyle{rm}
+\begin{document}
+\title{SlimC: analizador léxico, sintáctico y semántico para un subconjunto de C con Flex y Bison}
+\titlerunning{SlimC: analizador léxico, sintáctico y semántico}
+\author{Alondra Goretti Gonzalez Martinez\inst{1}}
+\authorrunning{A. G. Gonzalez Martinez}
+\institute{Centro Universitario de Ciencias Exactas e Ingenierías, Universidad de Guadalajara, Guadalajara, México}
+\maketitle
+
+\begin{abstract}
+Este trabajo reporta la versión final de SlimC, un \emph{front-end} ligero para un subconjunto de C desarrollado con Flex y Bison, y la contrasta con los requisitos de la Actividad Integradora Final. Se describen la especificación léxica (literales flotantes y de cadena, operadores relacionales y lógicos, comentarios), la gramática con sentencias \texttt{if/else} y \texttt{while} y recuperación de errores con el token \texttt{error}, y un análisis semántico basado en una tabla de símbolos con ámbitos que verifica declaración, aridad, compatibilidad de tipos \texttt{int} y \texttt{double}, redeclaración, constantes, condiciones y tipo de retorno. Se presenta además una versión equivalente de descenso recursivo en C y una interfaz local en el navegador. En las pruebas, la versión de descenso recursivo acepta \texttt{correcto.c} y detecta los siete errores semánticos esperados de \texttt{errores.c} en las líneas exactas; la gramática de Bison se verificó con un generador LALR(1) propio, que no halló conflictos en 142 estados. De los 31 requisitos del documento de la actividad, 28 se consideran cumplidos, 2 parciales y 1 pendiente. Quedan por confirmar la compilación real con Flex y Bison y la subida al repositorio.
+\end{abstract}
+\keywords{Analizador léxico \and Analizador sintáctico \and Análisis semántico \and Tabla de símbolos \and Flex \and Bison}
+
+\section{Introducción}
+Las primeras fases de un compilador son el análisis léxico, el sintáctico y el semántico, que en conjunto forman el \emph{front-end} \cite{aho06}. La Actividad Integradora Final pide extender, con Flex y Bison \cite{levine09}, el analizador construido en clase hasta obtener un compilador ligero (SlimC) para un subconjunto de C, sin generación de código objeto.
+
+Este documento tiene cuatro propósitos: (i) describir el diseño y la implementación de SlimC; (ii) reportar los resultados de las pruebas; (iii) contrastar el estado actual con los requisitos del documento de la actividad; y (iv) señalar qué falta por confirmar. Además de la solución en Flex y Bison, se construyó una versión de descenso recursivo en C y una interfaz local en el navegador, que no se piden en la actividad y se reportan como aportes adicionales.
+
+La sección~2 resume los requisitos; la sección~3 describe el diseño; la sección~4 presenta los resultados; la sección~5 analiza el cumplimiento; la sección~6 plantea el trabajo restante; y las secciones~7 y~8 discuten las limitaciones y concluyen.
+
+\section{Requisitos de la actividad integradora}
+El documento del profesor separa tres bloques. El primero describe la funcionalidad base: directivas \texttt{\#include} y \texttt{\#define}; palabras reservadas \texttt{int}, \texttt{double}, \texttt{const}, \texttt{main} y \texttt{return}; constantes enteras y flotantes; cadenas; funciones tipadas; y un análisis semántico con tabla de símbolos (identificadores no declarados o fuera de ámbito, aridad, compatibilidad de tipos y redeclaración).
+
+El segundo bloque lista las extensiones obligatorias. En la fase léxica: operadores relacionales y lógicos, y comentarios sin alterar \texttt{yylineno}. En la sintáctica: combinación libre de directivas y constantes tipadas al inicio, \texttt{if} e \texttt{if-else}, una sentencia iterativa y recuperación de errores con \texttt{error} y \texttt{yyerrok}. En la semántica: protección de constantes y macros, validación de variables y tipos en condiciones, validación del tipo de retorno e impresión de la tabla de símbolos con el conteo de errores léxicos, sintácticos y semánticos.
+
+El tercer bloque fija dos programas de prueba, \texttt{correcto.c} (debe aceptarse) y \texttt{errores.c} (debe reportar siete errores semánticos sin abortar), y los entregables: \texttt{lexer.l}, \texttt{parser.y}, \texttt{tabla\_simbolos.h/.c}, los dos programas de prueba, todos en la carpeta \texttt{proyecto-finalslimc} del repositorio.
+
+\section{Diseño e implementación}
+\subsection{Visión general}
+SlimC consta de un flujo de análisis con tres fases y dos implementaciones intercambiables (Fig.~\ref{fig:arq}). Ambas comparten el mismo módulo semántico y la misma tabla de símbolos, escritos en C, y producen el mismo formato de mensajes. El programa devuelve el código de salida 0 si no hay errores de ningún tipo y 1 en caso contrario.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[font=\scriptsize,>=Stealth,box/.style={draw,rounded corners=2pt,minimum height=8mm,minimum width=22mm,align=center,inner sep=2pt}]
+\node[box] (src) {Programa\\fuente (.c)};
+\node[box,right=5mm of src] (lex) {Análisis\\léxico};
+\node[box,right=5mm of lex] (par) {Análisis\\sintáctico};
+\node[box,right=5mm of par] (res) {Resultado\\y tabla};
+\node[box,below=8mm of par] (sem) {Análisis semántico\\(\texttt{semantica.c})};
+\node[box,below=8mm of res] (ts) {Tabla de símbolos\\(\texttt{tabla\_simbolos.c})};
+\draw[->] (src)--(lex);\draw[->] (lex)--node[above]{tokens}(par);\draw[->] (par)--(res);
+\draw[->] (par)--(sem);\draw[<->] (sem)--(ts);\draw[->] (ts)--(res);
+\node[below=3mm of sem,align=center,text width=85mm] {Implementaciones: (a) Flex + Bison; (b) descenso recursivo en C};
+\end{tikzpicture}
+\caption{Fases de SlimC y módulos compartidos.}\label{fig:arq}
+\end{figure}
+
+\subsection{Especificación léxica}
+La Tabla~\ref{tab:tok} resume los tokens de \texttt{lexer.l}. Los comentarios de una y varias líneas se descartan sin alterar la numeración, porque Flex cuenta los saltos de línea de cualquier texto reconocido con \texttt{\%option yylineno}. Se usa una condición de inicio exclusiva (\texttt{INCL}) para reconocer \texttt{<archivo.h>} solo después de \texttt{\#include}; así el símbolo \texttt{<} sigue siendo un operador relacional en el resto del programa. Cualquier otro carácter genera un error léxico con su línea y se ignora.
+
+\begin{table}[t]
+\caption{Tokens de \texttt{lexer.l}.}\label{tab:tok}
+\centering\footnotesize
+\begin{tabular}{@{}p{38mm}p{42mm}p{30mm}@{}}
+\toprule
+Token & Patrón & Ejemplo\\
+\midrule
+Directivas & \texttt{\#include}, \texttt{\#define} & \texttt{\#define PI 3.14}\\
+\texttt{T\_LIBRERIA} & \texttt{<nombre.h>} tras \texttt{\#include} & \texttt{<stdio.h>}\\
+Palabras reservadas & \texttt{const int double main return if else while} & \texttt{const int}\\
+\texttt{T\_ID} & \texttt{[A-Za-z\_][A-Za-z0-9\_]*} & \texttt{calcular}\\
+\texttt{T\_NUM}, \texttt{T\_FLOAT} & \texttt{[0-9]+}, \texttt{[0-9]+.[0-9]+} & \texttt{42}, \texttt{2.5}\\
+\texttt{T\_STRING} & texto entre comillas con escapes & \texttt{"total = \%d"}\\
+Relacionales y lógicos & \texttt{== != < > <= >= \&\& || !} & \texttt{x <= 5}\\
+Símbolos & \texttt{+ - * / ( ) \{ \} , ; =} & \texttt{a + b}\\
+Error léxico & otro carácter, cadena o comentario sin cerrar & \texttt{\$}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Gramática}
+La gramática de \texttt{parser.y} (Fig.~\ref{lst:gram}) permite combinar directivas y constantes al inicio, seguidas de funciones tipadas. La precedencia se declara con \texttt{\%left} y \texttt{\%right}, de menor a mayor: \texttt{||}, \texttt{\&\&}, igualdad, relacionales, suma y resta, producto y división, y los operadores unarios \texttt{!} y \texttt{-}. Como \texttt{if} y \texttt{while} exigen bloques con llaves, no existe el problema del \texttt{else} ambiguo.
+
+\begin{figure}[t]
+\begin{lstlisting}
+programa    : prelude funcion*            (debe existir 'main')
+prelude     : ( directiva | const_global )*
+directiva   : #include LIBRERIA | #define ID ( NUM | FLOAT | STRING )
+            | #define ID '(' expr ')'
+const_global: 'const' tipo ID '=' expr ';'
+funcion     : tipo ( ID | 'main' ) '(' [params] ')' '{' sentencia* '}'
+sentencia   : tipo ID ['=' expr] ';' | const_global | ID '=' expr ';'
+            | llamada ';' | 'return' expr ';' | if | while | bloque | ';'
+if          : 'if' '(' expr ')' bloque ['else' (bloque | if)]
+while       : 'while' '(' expr ')' bloque
+llamada     : ID '(' [expr {',' expr}] ')'
+expr        : NUM | FLOAT | STRING | ID | llamada | '(' expr ')'
+            | '-' expr | '!' expr | expr OP expr
+\end{lstlisting}
+\caption{Gramática de SlimC (EBNF); \texttt{tipo} es \texttt{int} o \texttt{double}.}\label{lst:gram}
+\end{figure}
+
+\subsection{Tabla de símbolos}
+\texttt{tabla\_simbolos.c} implementa una lista de símbolos y una pila de ámbitos. Cada símbolo guarda nombre, clase (variable, constante, macro, función o parámetro), tipo, ámbito, aridad y tipos de parámetros (en funciones), bandera de constante y línea de declaración. La búsqueda recorre la lista del símbolo más reciente al más antiguo y solo considera los ámbitos abiertos, por lo que una declaración interna oculta a una externa. Los símbolos no se eliminan al cerrar su ámbito: así la tabla final puede imprimirse completa, con el nombre del ámbito de cada uno (por ejemplo \texttt{main.bloque1}). Las funciones \texttt{printf} y \texttt{scanf} vienen predefinidas como variádicas y no se imprimen.
+
+\subsection{Análisis semántico}
+Las acciones de \texttt{parser.y} son llamadas de una línea a funciones de \texttt{semantica.c}, que concentran las reglas de la Tabla~\ref{tab:reglas}. Los tipos se propagan como valor semántico de cada expresión; un tipo especial de error evita errores en cascada cuando una subexpresión ya se reportó. Un \texttt{int} es aceptable donde se espera un \texttt{double}, pero no al revés. Dentro de la condición de un \texttt{if} o \texttt{while}, una variable no declarada se reporta con un mensaje propio que nombra la sentencia.
+
+\begin{table}[t]
+\caption{Reglas semánticas y su función.}\label{tab:reglas}
+\centering\footnotesize
+\begin{tabular}{@{}p{58mm}p{50mm}@{}}
+\toprule
+Verificación & Función\\
+\midrule
+Variable no declarada o fuera de ámbito & \texttt{sem\_usar\_variable}\\
+Aridad y tipo de cada argumento en llamadas & \texttt{sem\_llamada}\\
+Asignación a constante o macro, y tipos en asignaciones & \texttt{sem\_asignar}\\
+Redeclaración de variable, función, parámetro o macro & \texttt{sem\_declarar\_variable}, \texttt{sem\_iniciar\_funcion}, \texttt{sem\_definir\_macro}\\
+Tipo de la inicialización de constantes y variables & \texttt{sem\_definir\_constante}\\
+Condiciones de \texttt{if} y \texttt{while} & \texttt{sem\_condicion\_inicio/fin}\\
+Tipo de retorno & \texttt{sem\_retorno}\\
+Existencia de \texttt{main} & \texttt{sem\_fin\_programa}\\
+Tabla de símbolos y conteo de errores & \texttt{sem\_resumen}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Recuperación de errores}
+Los mensajes sintácticos siguen el formato «Error sintáctico en línea N (lexema 'x'): syntax error, unexpected A, expecting B», generado por \texttt{\%define parse.error verbose}. Se emplean tres mecanismos: (1) reglas específicas para \texttt{\#include} sin librería, \texttt{\#define} incompleto y función sin nombre, que toman la línea del valor semántico del token porque Bison ya leyó el siguiente token al reducir; (2) \texttt{sentencia: error ';'} y \texttt{funcion: error '\}'}, ambas con \texttt{yyerrok}; y (3) en la versión manual, recuperación en modo pánico hasta el siguiente \texttt{;} o \texttt{\}}.
+
+\subsection{Implementaciones e interfaz}
+La versión de Flex y Bison consta de \texttt{lexer.l} (70 líneas) y \texttt{parser.y} (274 líneas, 75 alternativas de producción). La versión manual, \texttt{slimc\_manual.c} (332 líneas), analiza el mismo lenguaje por descenso recursivo y llama a las mismas funciones semánticas, por lo que sirve como referencia para comparar salidas. Una interfaz local (\texttt{servidor.py}, 122 líneas, e \texttt{index.html}, 74 líneas) atiende en \texttt{127.0.0.1:8765} y ejecuta los mismos comandos de la terminal (Fig.~\ref{fig:int}), con un botón por paso, el marcado de las líneas con error y una comparación lado a lado de las dos versiones. Solo escucha en la máquina local, acepta una lista fija de nombres de archivo y exige una cabecera personalizada en las peticiones que ejecutan comandos.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[font=\scriptsize,>=Stealth,box/.style={draw,rounded corners=2pt,minimum height=8mm,minimum width=24mm,align=center,inner sep=2pt}]
+\node[box] (nav) {Navegador\\(editor y botones)};
+\node[box,right=9mm of nav] (srv) {\texttt{servidor.py}\\127.0.0.1:8765};
+\node[box,right=9mm of srv] (sh) {Shell MSYS2\\(o \texttt{sh} en Linux)};
+\node[box,right=9mm of sh,minimum width=20mm] (tools) {gcc, flex,\\bison};
+\draw[<->] (nav)--node[above]{HTTP}(srv);\draw[->] (srv)--(sh);\draw[->] (sh)--(tools);
+\end{tikzpicture}
+\caption{Arquitectura de la interfaz local.}\label{fig:int}
+\end{figure}
+
+\section{Resultados}
+\subsection{Entorno y alcance de la verificación}
+El proyecto se desarrolla en Windows~11 con MSYS2 UCRT64 (GCC 16.1.0, Flex 2.6.4, Bison 3.8.2 y Make 4.4.1) y en Ubuntu~24.04. Los resultados de esta sección se obtuvieron compilando \texttt{tabla\_simbolos.c}, \texttt{semantica.c} y \texttt{slimc\_manual.c} con gcc 13.3.0 sobre Ubuntu~24.04, sin avisos. \textbf{La compilación y ejecución de \texttt{lexer.l} y \texttt{parser.y} con Flex y Bison no se había realizado al redactar este informe}; su verificación se limita, por ahora, a una revisión estática de tipos y números de símbolo, a pruebas de los patrones léxicos con expresiones regulares equivalentes y a un generador LALR(1) propio. Este último construyó 235 estados LR(1), fusionados en 142 estados LALR, sin conflictos, y con él la gramática aceptó \texttt{correcto.c} y \texttt{errores.c} y rechazó un \texttt{if} sin llaves y una declaración sin nombre.
+
+\subsection{Casos exigidos por la actividad}
+Los programas de la sección~9 del documento se reconstruyeron a partir del PDF. Como la impresión omite las líneas en blanco, \texttt{errores.c} se completó con líneas en blanco y un comentario para que los errores caigan en las líneas 3, 22, 23, 24, 25, 27 y 31 que el documento indica. La Tabla~\ref{tab:casos} resume los resultados de la versión manual.
+
+\begin{table}[t]
+\caption{Resultados con los casos exigidos (versión manual).}\label{tab:casos}
+\centering\footnotesize
+\begin{tabular}{@{}llll@{}}
+\toprule
+Programa & Esperado & Obtenido & Código de salida\\
+\midrule
+\texttt{correcto.c} & \texttt{ACCEPT} & \texttt{ACCEPT}, 0 errores & 0\\
+\texttt{errores.c} & 7 errores semánticos & 7 errores, en las líneas esperadas & 1\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Para \texttt{errores.c}, el analizador no se detiene y reporta exactamente los siete mensajes del documento, sin errores adicionales:
+
+\begin{lstlisting}
+Error semántico en línea 3: macro 'LIMITE' ya definida.
+Error semántico en línea 22: no se puede asignar un valor a la constante
+    'BASE'.
+Error semántico en línea 23: la función 'calcular' espera 2 argumento(s),
+    pero recibió 1.
+Error semántico en línea 24: variable 'a' no declarada en el ámbito actual.
+Error semántico en línea 25: tipo incompatible en argumento 1 de 'calcular'
+    (se esperaba 'int', se recibió 'double').
+Error semántico en línea 27: variable 'noDeclarada' no declarada en
+    condición 'if'.
+Error semántico en línea 31: variable 'contador' no declarada en condición
+    'while'.
+\end{lstlisting}
+
+Para \texttt{correcto.c} se imprime la tabla de símbolos de la Tabla~\ref{tab:ts}, seguida del resumen con 0 errores léxicos, 0 sintácticos y 0 semánticos.
+
+\begin{table}[t]
+\caption{Tabla de símbolos impresa para \texttt{correcto.c}.}\label{tab:ts}
+\centering\footnotesize
+\begin{tabular}{@{}llllll@{}}
+\toprule
+Nombre & Clase & Tipo & Ámbito & Aridad/Const & Línea\\
+\midrule
+\texttt{LIMITE} & macro & int & global & const & 2\\
+\texttt{BASE} & constante & int & global & const & 4\\
+\texttt{calcular} & función & int & global & aridad=2 & 6\\
+\texttt{a}, \texttt{b} & parámetro & int & calcular & - & 6\\
+\texttt{suma} & variable & int & calcular & - & 7\\
+\texttt{promedio} & función & double & global & aridad=2 & 11\\
+\texttt{a}, \texttt{b} & parámetro & int & promedio & - & 11\\
+\texttt{main} & función & int & global & aridad=0 & 15\\
+\texttt{x} & variable & int & main & - & 16\\
+\texttt{total} & variable & int & main & - & 17\\
+\texttt{media} & variable & double & main & - & 18\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Prueba con errores de los tres tipos}
+Se añadió \texttt{errores\_extra.c}, que mezcla errores léxicos, sintácticos y semánticos, para comprobar que el análisis continúa tras un error y que los tres conteos se separan. La versión manual reporta nueve errores (1 léxico, 5 sintácticos y 3 semánticos): el carácter \texttt{@} (línea 12), un \texttt{\#define} sin identificador (3), un número inesperado (12), una declaración sin nombre (13), la falta de \texttt{)} (16) y de \texttt{;} (21), la asignación a la constante \texttt{FACTOR} (22), un \texttt{double} asignado a \texttt{int} (15) y un \texttt{return} de tipo \texttt{double} en una función \texttt{int} (23).
+
+\subsection{Evolución respecto de la línea base}
+Antes de esta etapa, el analizador de la sesión de clase reportaba 19 errores sobre \texttt{correcto.c}, en lugar de aceptarlo, y ninguno de los siete errores semánticos sobre \texttt{errores.c}. Con SlimC, la versión manual acepta el primero y detecta los siete errores del segundo.
+
+\subsection{Tamaño del código}
+La Tabla~\ref{tab:loc} resume las líneas físicas de cada archivo.
+
+\begin{table}[t]
+\caption{Líneas físicas por archivo.}\label{tab:loc}
+\centering\footnotesize
+\begin{tabular}{@{}llr@{}}
+\toprule
+Archivo & Función & Líneas\\
+\midrule
+\texttt{lexer.l} & especificación léxica (Flex) & 70\\
+\texttt{parser.y} & gramática, errores y acciones (Bison) & 274\\
+\texttt{tabla\_simbolos.c/.h} & tabla de símbolos con ámbitos & 120 + 42\\
+\texttt{semantica.c/.h} & verificaciones semánticas & 227 + 39\\
+\texttt{slimc\_manual.c} & versión de descenso recursivo & 332\\
+\texttt{servidor.py}, \texttt{index.html} & interfaz local & 122 + 74\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Análisis de cumplimiento}
+Se identificaron 31 requisitos en el documento de la actividad (Tablas~\ref{tab:lex} a~\ref{tab:ent}). Un requisito se marca como Cumplido cuando está implementado y verificado con la versión manual y con la revisión estática de Flex y Bison; Parcial, cuando falta confirmar su compilación con Flex y Bison; y Pendiente, cuando no se ha realizado.
+
+\begin{table}[t]
+\caption{Fase léxica.}\label{tab:lex}
+\centering\footnotesize
+\begin{tabular}{@{}p{85mm}l@{}}
+\toprule
+Requisito & Estado\\
+\midrule
+Directivas \texttt{\#include}, \texttt{\#define} y nombres de librería & Cumplido\\
+Palabras reservadas \texttt{int}, \texttt{main}, \texttt{return} & Cumplido\\
+Palabras reservadas \texttt{double} y \texttt{const} & Cumplido\\
+Identificadores y constantes enteras & Cumplido\\
+Constantes flotantes y literales de cadena & Cumplido\\
+Operadores aritméticos, delimitadores y control de línea & Cumplido\\
+Relacionales (\texttt{== != < > <= >=}) y lógicos (\texttt{\&\& || !}) & Cumplido\\
+Comentarios \texttt{//} y \texttt{/* */} sin alterar la numeración de líneas & Cumplido\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\caption{Fase sintáctica.}\label{tab:sin}
+\centering\footnotesize
+\begin{tabular}{@{}p{85mm}l@{}}
+\toprule
+Requisito & Estado\\
+\midrule
+Varias directivas \texttt{\#include} y \texttt{\#define} con valor literal & Cumplido\\
+\texttt{\#define} con valor flotante y constantes globales \texttt{const} tipadas & Cumplido\\
+Funciones tipadas (\texttt{int}, \texttt{double}) con parámetros tipados & Cumplido\\
+Función \texttt{main}, variables locales y \texttt{return} con expresión & Cumplido\\
+Llamadas como expresión y como sentencia (incluye \texttt{printf} con cadenas) & Cumplido\\
+Sentencias \texttt{if} e \texttt{if-else} & Cumplido\\
+Sentencia iterativa (\texttt{while}) & Cumplido\\
+Recuperación con \texttt{error} y \texttt{yyerrok} & Cumplido\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\caption{Fase semántica.}\label{tab:sem}
+\centering\footnotesize
+\begin{tabular}{@{}p{85mm}l@{}}
+\toprule
+Requisito & Estado\\
+\midrule
+Tabla de símbolos con ámbitos & Cumplido\\
+Identificadores no declarados o fuera de ámbito & Cumplido\\
+Error de aridad en llamadas & Cumplido\\
+Compatibilidad de tipos (\texttt{int}, \texttt{double}) en argumentos y asignaciones & Cumplido\\
+Redeclaración de símbolos y macros & Cumplido\\
+Protección de constantes y macros & Cumplido\\
+Variables y tipos válidos en condiciones \texttt{if} y \texttt{while} & Cumplido\\
+Tipo de retorno compatible con la firma & Cumplido\\
+Tabla de símbolos y resumen con los tres conteos de errores & Cumplido\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\caption{Entregables.}\label{tab:ent}
+\centering\footnotesize
+\begin{tabular}{@{}p{85mm}l@{}}
+\toprule
+Requisito & Estado\\
+\midrule
+\texttt{lexer.l} (falta compilarlo con Flex) & Parcial\\
+\texttt{parser.y} (falta compilarlo con Bison) & Parcial\\
+\texttt{tabla\_simbolos.h} y \texttt{tabla\_simbolos.c} & Cumplido\\
+\texttt{correcto.c} & Cumplido\\
+\texttt{errores.c} & Cumplido\\
+Carpeta \texttt{proyecto-finalslimc} en GitHub & Pendiente\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+En total, 28 de los 31 requisitos están cumplidos, 2 parciales y 1 pendiente.
+
+\subsection{Aportes adicionales}
+Los siguientes elementos no se piden en el documento del profesor:
+\begin{itemize}
+\item Una versión de descenso recursivo en C, con recuperación en modo pánico, que comparte el módulo semántico y sirve como respaldo y referencia.
+\item Una interfaz local en el navegador con editor, un botón por cada paso de compilación y comparación lado a lado de las dos versiones.
+\item Un generador LALR(1) y una revisión estática para verificar la gramática sin Bison.
+\item Un programa de prueba con errores de los tres tipos (\texttt{errores\_extra.c}), pruebas automáticas (\texttt{probar.sh}) y ejecutables portables para Windows.
+\item Un \texttt{Makefile}, scripts de compilación para Windows y Linux, y una guía de uso.
+\end{itemize}
+
+\section{Trabajo restante}
+\begin{enumerate}
+\item \textbf{Compilar con Flex y Bison:} ejecutar \texttt{bison -d parser.y}, \texttt{flex lexer.l} y \texttt{gcc} sobre todos los archivos, y corregir cualquier error de compilación.
+\item \textbf{Ejecutar las pruebas:} correr \texttt{probar.sh} sobre la versión de Flex y Bison y comparar su salida con la de la versión manual.
+\item \textbf{Subir al repositorio:} copiar a \texttt{proyecto-finalslimc} los archivos \texttt{lexer.l}, \texttt{parser.y}, \texttt{tabla\_simbolos.h/.c}, \texttt{semantica.h/.c}, \texttt{correcto.c} y \texttt{errores.c}.
+\item \textbf{Validar con los archivos originales del profesor:} sustituir las reconstrucciones de \texttt{correcto.c} y \texttt{errores.c} y comprobar los números de línea.
+\item \textbf{Opcional:} agregar la sentencia \texttt{for} y capturas de pantalla de la ejecución.
+\end{enumerate}
+
+\section{Discusión y limitaciones}
+La decisión de concentrar las reglas semánticas en \texttt{semantica.c}, y no dentro de las acciones de Bison, permitió probarlas con un compilador de C sin necesidad de Flex y Bison, y reutilizarlas en la versión manual. A cambio, la corrección de \texttt{lexer.l} y \texttt{parser.y} depende de que se compilen en el entorno final.
+
+Las principales limitaciones son: \texttt{if} y \texttt{while} exigen llaves; no se incluyó \texttt{for}; solo existen los tipos \texttt{int}, \texttt{double} y cadenas (estas últimas únicamente como argumento de \texttt{printf} y \texttt{scanf}); no hay \texttt{void}, arreglos ni apuntadores; y \texttt{main} puede aparecer en cualquier posición. La recuperación de errores en Bison es más simple que en la versión manual: un error fuera de un bloque se resuelve saltando hasta la siguiente llave de cierre, lo que puede producir mensajes adicionales. Por último, los programas de prueba de la actividad se reconstruyeron del PDF, por lo que los números de línea deben confirmarse con los archivos originales.
+
+\section{Conclusiones}
+SlimC cubre las tres fases del \emph{front-end} pedidas: el analizador léxico reconoce los nuevos literales y operadores, la gramática incorpora constantes tipadas, \texttt{if/else} y \texttt{while} con recuperación de errores, y el análisis semántico con tabla de símbolos detecta los siete errores del caso de prueba en las líneas exactas. La versión de descenso recursivo valida el comportamiento esperado, y la gramática de Bison no presenta conflictos según un generador LALR(1) independiente. Con 28 de 31 requisitos cumplidos, el trabajo restante consiste en compilar \texttt{lexer.l} y \texttt{parser.y} con Flex y Bison, ejecutar las pruebas sobre esa versión y subir los entregables al repositorio.
+
+\begin{thebibliography}{8}
+\bibitem{aho06} Aho, A.V., Lam, M.S., Sethi, R., Ullman, J.D.: Compilers: Principles, Techniques, and Tools. 2nd edn. Addison-Wesley, Boston (2006)
+\bibitem{levine09} Levine, J.: Flex \& Bison. O'Reilly Media, Sebastopol (2009)
+\bibitem{bison} Free Software Foundation: GNU Bison Manual, \url{https://www.gnu.org/software/bison/manual/}, last accessed 2026/11/25
+\bibitem{flex} Paxson, V., Estes, W., Millaway, J.: Lexical Analysis with Flex, \url{https://github.com/westes/flex}, last accessed 2026/11/25
+\bibitem{avina} Avina Méndez, J.A.: Compiladores (repositorio del curso), \url{https://github.com/joseavinatecmm/compiladores}, last accessed 2026/11/25
+\bibitem{lncs} Springer: LNCS Homepage, \url{http://www.springer.com/lncs}, last accessed 2026/11/25
+\end{thebibliography}
+\end{document}

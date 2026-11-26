@@ -1,0 +1,7 @@
+Error semántico en línea 3: macro 'LIMITE' ya definida.
+Error semántico en línea 22: no se puede asignar un valor a la constante 'BASE'.
+Error semántico en línea 23: la función 'calcular' espera 2 argumento(s), pero recibió 1.
+Error semántico en línea 24: variable 'a' no declarada en el ámbito actual.
+Error semántico en línea 25: tipo incompatible en argumento 1 de 'calcular' (se esperaba 'int', se recibió 'double').
+Error semántico en línea 27: variable 'noDeclarada' no declarada en condición 'if'.
+Error semántico en línea 31: variable 'contador' no declarada en condición 'while'.
